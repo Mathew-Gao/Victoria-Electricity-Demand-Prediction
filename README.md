@@ -14,15 +14,15 @@ The following files are included in this project:
 
 # Cleaning the Data
 
-Before building the predictive model, the data had to be cleaned and processed to remove any missing or irrelevant data points, and to merge the electricity demand and weather data sets. A description of the cleaning steps can be found in the 2-page report submitted on September 2, 2022.
+Before building the predictive model, the data had to be cleaned and processed to remove any missing or irrelevant data points, and to merge the electricity demand and weather data sets.
 
 # Analytical/Modeling Process
 
-The modeling process involved analyzing the exploratory data features, building and selecting appropriate models for point forecasts and maximum demand forecasts, and assessing the forecast accuracy. The steps and timeline for this process were outlined in the 2-page report submitted on September 2, 2022.
+The modeling process involved analyzing the exploratory data features, building and selecting appropriate models for point forecasts and maximum demand forecasts, and assessing the forecast accuracy.
 
 # Results
 
-The key results of the project are summarized in the report submitted on September 16, 2022, including the point forecasts and expected maximum demand predictions for the week of July 1-7, 2022. The report includes relevant statistics and tables that aid the discussion of the issues and exploratory data features, as well as the technical analysis and model selection.
+The key results of the project are summarized in the report submitted includes the point forecasts and expected maximum demand predictions for the week of July 1-7, 2022. The report includes relevant statistics and tables that aid the discussion of the issues and exploratory data features, as well as the technical analysis and model selection.
 
 # Conclusion
 
