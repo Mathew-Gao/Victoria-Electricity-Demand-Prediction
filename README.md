@@ -6,11 +6,13 @@ This is a predictive analytics project that aims to build a model for predicting
 
 The following files are included in this project:
 
-**Predictive Analytics.rmd**: an R Markdown file containing the code and analysis for the project.
+**Electricity Usage Prediction.Rmd**: an R Markdown file containing the code and analysis for the project.
 
 **AEMO_electricity.csv**: a CSV file containing the half-hourly electricity demand and price data from the Victorian electricity market.
 
 **MELAIR_weather.csv**: a CSV file containing the half-hourly weather data from Melbourne Airport.
+
+**Electricity Demand Prediction Report**: a pfd file reports the process and results for this project.
 
 # Cleaning the Data
 
