@@ -1,0 +1,1263 @@
+---
+title: "PA-Group Assignment"
+author: "Shuting, Yijie, Mathew, Nick, Bill"
+date: '2022-08-26'
+output: pdf_document
+---
+Library
+```{r}
+library(readr)
+library(dplyr)
+library(zoo)
+library(lubridate)
+library(tsibble)
+library(plotly)
+library(fpp3)
+library(seasonal)
+library(forecast)
+library(plotly)
+library(urca)
+library(fpp)
+library(AICcmodavg)
+library(sn)
+library(stats4)
+```
+
+Import data
+```{r}
+setwd("~/Desktop/m3/Predictive Analytics/Group Assignment/Syndicate Assignment")
+MELAIR_weather <- read_csv("MELAIR_weather.csv")
+AEMO_electricity <- read_csv("AEMO_electricity.csv")
+```
+Summary of dataset
+```{r}
+glimpse(MELAIR_weather)
+summary(MELAIR_weather[6:8])
+```
+
+```{r}
+glimpse(AEMO_electricity)
+summary(AEMO_electricity[2:3])
+```
+Check duplicates
+```{r}
+MELAIR_weather %>% 
+  distinct(.keep_all = TRUE)
+AEMO_electricity %>% 
+  distinct(.keep_all = TRUE)
+#no duplicate
+```
+
+Outlier
+```{r}
+par(mfrow=c(1,3))
+boxplot(MELAIR_weather$`Air Temperature in degrees C`,
+  ylab = "Air Temperature in C"
+)
+boxplot(MELAIR_weather$`Relative humidity in percentage %`,
+  ylab = "Relative Humidity in Percentage %"
+)
+boxplot(MELAIR_weather$`Wind speed in km/h`,
+  ylab = "Wind Speed in km/h"
+)
+```
+
+```{r}
+par(mfrow=c(1,2))
+boxplot(AEMO_electricity$TOTALDEMAND,
+  ylab = "Demand"
+)
+boxplot(AEMO_electricity$TRADEPRICE,
+  ylab = "Trade Price"
+)
+```
+Counting missing value
+```{r ne}
+MELAIR_weather %>%
+    summarise(Temperature = sum(is.na(`Air Temperature in degrees C`)), 
+              Humidity = sum(is.na(`Relative humidity in percentage %`)), 
+              Wind_speed = sum(is.na(`Wind speed in km/h`)))
+#weather dataset has missing value
+AEMO_electricity %>%
+  summarise(Demand = sum(is.na(TOTALDEMAND)),
+            Price = sum(is.na(TRADEPRICE)))
+#electricity dataset has no missing value
+```
+Replace NA by interpolation
+```{r}
+weather <- MELAIR_weather %>%
+  mutate(`Air Temperature in degrees C` = na.approx(`Air Temperature in degrees C`, maxgap = Inf, rule = 2)) %>%
+  mutate(`Relative humidity in percentage %` = na.approx(`Relative humidity in percentage %`, maxgap = Inf, rule = 2)) %>%
+  mutate(`Wind speed in km/h` = na.approx(`Wind speed in km/h`, maxgap = Inf, rule = 2))
+```
+Check missing value
+```{r}
+weather %>%
+    summarise(Temperature = sum(is.na(`Air Temperature in degrees C`)), 
+              Humidity = sum(is.na(`Relative humidity in percentage %`)), 
+              Wind_speed = sum(is.na(`Wind speed in km/h`)))
+```
+Format date and time
+```{r}
+weather$Date <- paste(weather$DD, weather$MM, weather$YYYY, weather$HH24, weather$`MI format in Local standard time`, sep="/") %>% dmy_hm()
+#concate YYYY, MM ,DD HH MI into dd/mm/yyyy hh:mm
+#weather$Date <- lubridate::with_tz(weather$Date, "Australia/Melbourne") 
+weather$Weekday <- wday(weather$Date, label = TRUE)
+#add weekday column
+weather
+```
+Extract Year month day hour and minute from SETTLEMENTDATE
+```{r}
+electricity <- AEMO_electricity
+electricity$Year <- year(dmy_hm(electricity$SETTLEMENTDATE))
+electricity$Month <- month(dmy_hm(electricity$SETTLEMENTDATE)) 
+electricity$Day <- day(dmy_hm(electricity$SETTLEMENTDATE))
+electricity$Hour <-hour(dmy_hm(electricity$SETTLEMENTDATE))
+electricity$Minute <- minute(dmy_hm(electricity$SETTLEMENTDATE))
+```
+Check missing value
+```{r}
+electricity %>%
+    summarise(Year = sum(is.na(Year)), 
+              Month = sum(is.na(Month)), 
+              Day = sum(is.na(Day)),
+              Hour = sum(is.na(Hour)),
+              Minute = sum(is.na(Minute)))
+#Before 2021 format: dd/mm/yyyy hh:mm
+#After 2021 format: mm/dd/yyyy hh:mm
+```
+Extract Year month day hour minute after 2021
+```{r}
+electricity[c(52608:78816),]$Year <- year(mdy_hm(electricity[c(52608:78816),]$SETTLEMENTDATE))
+electricity[c(52608:78816),]$Month <- month(mdy_hm(electricity[c(52608:78816),]$SETTLEMENTDATE)) 
+electricity[c(52608:78816),]$Day <- day(mdy_hm(electricity[c(52608:78816),]$SETTLEMENTDATE))
+electricity[c(52608:78816),]$Hour <-hour(mdy_hm(electricity[c(52608:78816),]$SETTLEMENTDATE))
+electricity[c(52608:78816),]$Minute <- minute(mdy_hm(electricity[c(52608:78816),]$SETTLEMENTDATE))
+
+```
+Merge year month day hour minute into correct date
+```{r}
+electricity$Date <- paste(electricity$Day, electricity$Month, electricity$Year, electricity$Hour, electricity$Minute, sep="/") %>% dmy_hm() 
+#electricity$Date <- lubridate::with_tz(electricity$Date, "Australia/Melbourne")
+#electricity
+```
+Shift one hour
+```{r}
+df_shift_one_hour <- weather
+for(i in 65812:74547){
+  df_shift_one_hour$Date[i] = df_shift_one_hour$Date[i] - hms("01:00:00")
+  }
+```
+
+Concate two data on date
+```{r}
+concate <- merge(df_shift_one_hour, electricity, by = 'Date')
+df <- subset(concate, select = -c(SETTLEMENTDATE, Year, Month, Day, Hour, Minute))
+df$DateTime <- df$Date
+df$Date <- date(df$DateTime)
+
+df_sim <- subset(concate, select = c(Date, `Air Temperature in degrees C`, `Relative humidity in percentage %`, `Wind speed in km/h`, TOTALDEMAND, TRADEPRICE))
+```
+Add Day Type indicator
+```{r}
+df$Weekend <- ifelse(df$Weekday== 'Sat' | df$Weekday == 'Sun', 1, 0) 
+#1 for Saturday and Sunday, 0 for others
+```
+Add Holiday Indicator
+```{r}
+holiday_date <- holiday_aus(2018:2022, state = 'VIC') 
+df$Holiday <- ifelse(date(df$Date) %in% holiday_date$date, 1, 0) 
+#df
+```
+Add Covid Indicator
+```{r}
+df$Covid <- ifelse(date(df$Date) > "2020-01-01", 1, 0) 
+```
+Data Exploration
+Price Elasticity
+```{r}
+plot(df[,11:12], xlab = 'Total Demand of Electricity', ylab = 'Trade Price of Electricity', main = 'Electricity Demand and Price in VIC')
+```
+```{r}
+elasticity <- lm(TOTALDEMAND ~ TRADEPRICE, data = df)
+summary(elasticity)
+mean(df$TOTALDEMAND)
+mean(df$TRADEPRICE)
+```
+
+Demand Time series
+```{r}
+demand <- ts(df[,11],
+           frequency=17532,start=c(2018,1),name="demand")
+plot(demand)
+```
+```{r}
+demand %>%
+  stl(t.window=17533, s.window="periodic", robust=TRUE) %>%
+  plot()
+```
+
+Time of day
+```{r}
+df %>%
+  group_by(hour(ymd_hms(DateTime))) %>%
+  summarise_at(vars(TOTALDEMAND), list(name = mean))
+```
+Time of day
+```{r}
+ggplot(df, aes(x = DateTime, y = TOTALDEMAND, colour = hour(ymd_hms(DateTime)), group = hour(ymd_hms(DateTime)))) + labs(color = "Time of Day") +  geom_line() + geom_point()
+```
+Weekday
+```{r}
+df %>%
+  group_by(Weekday) %>%
+  summarise_at(vars(TOTALDEMAND), list(name = mean))
+```
+
+```{r}
+ggplot(df, aes(x = DateTime, y = TOTALDEMAND, colour = Weekday, group = Weekday)) +  geom_line() + geom_point() 
+```
+Weekend
+```{r}
+df %>%
+  group_by(Weekend) %>%
+  summarise_at(vars(TOTALDEMAND), list(name = mean))
+```
+
+```{r}
+ggplot(df, aes(x = DateTime, y = TOTALDEMAND)) + 
+  geom_line(aes(color = as.factor(Weekend), linetype = as.factor(Weekend))) + 
+  scale_color_manual(values = c("darkred", "steelblue")) 
+```
+Holiday
+```{r}
+df %>%
+  group_by(Holiday) %>%
+  summarise_at(vars(TOTALDEMAND), list(name = mean))
+```
+
+```{r}
+ggplot(df, aes(x = DateTime, y = TOTALDEMAND)) + 
+  geom_line(aes(color = as.factor(Holiday), linetype = as.factor(Holiday))) + 
+  scale_color_manual(values = c("darkred", "steelblue")) 
+```
+Air Temp
+```{r}
+AirTemp <- df %>% mutate(category=cut(`Air Temperature in degrees C`, breaks=c(-Inf, 10.4, 13.8, 18.08, Inf), labels=c("low","mid-low","mid-high", "high")))
+```
+Humidity
+```{r}
+Humidity <- df %>% mutate(category=cut(`Relative humidity in percentage %`, breaks=c(-Inf, 55, 71, 84, Inf), labels=c("low","mid-low","mid-high", "high")))
+```
+Wind speed
+```{r}
+WindSpeed <- df %>% mutate(category=cut(`Wind speed in km/h`, breaks=c(-Inf, 11.6, 17, 25.3, Inf), labels=c("low","mid-low","mid-high", "high")))
+```
+```{r}
+par(mfrow=c(1,3))
+ggplot(AirTemp, aes(x = DateTime, y = TOTALDEMAND, colour = category, group = category)) +  geom_line() + geom_point() + labs(color = "Air Temp")
+
+ggplot(Humidity, aes(x = DateTime, y = TOTALDEMAND, colour = category, group = category)) +  geom_line() + geom_point()+ labs(color = "Humidity")
+
+ggplot(WindSpeed, aes(x = DateTime, y = TOTALDEMAND, colour = category, group = category)) +  geom_line() + geom_point()+ labs(color = "Wind Speed")
+```
+```{r}
+summary(lm(df$TOTALDEMAND ~ df$`Air Temperature in degrees C` + I(df$`Air Temperature in degrees C`^2) + df$`Relative humidity in percentage %` + df$`Wind speed in km/h` + df$TRADEPRICE + as.factor(df$Weekend) + as.factor(df$Holiday)))
+```
+```{r}
+summary(lm(df$TOTALDEMAND ~ df$`Air Temperature in degrees C` + I(df$`Air Temperature in degrees C`^2) + df$`Relative humidity in percentage %` + df$TRADEPRICE + as.factor(df$Weekend) + as.factor(df$Holiday)))
+```
+
+demand plot
+```{r}
+df_sim <- subset(concate, select = c(Date, `Air Temperature in degrees C`, `Relative humidity in percentage %`, `Wind speed in km/h`, TOTALDEMAND, TRADEPRICE))
+
+data_ts <- as_tsibble(df_sim)
+autoplot(data_ts, .vars = TOTALDEMAND)
+data_ts %>%
+  ACF(TOTALDEMAND) %>% autoplot()
+# strong seasonality 
+```
+
+```{r}
+demand_1st = diff(demand, 48)
+
+unitroot_kpss(demand_1st)
+# after taking seasonal difference, the data is stationary 
+
+unitroot_ndiffs(demand_1st)
+# no further differencing is needed
+
+# testing stationarity for differncing data
+adf.test(demand_1st, alternative = "stationary") #ADF test
+# reject null -> stationary 
+
+kpss.test(demand_1st) #KPSS test
+# p = 0.1 > 0.05, not rejecting null -> stationary
+
+# check out the ACF 
+# par(mfrow=c(2,1))
+plot(demand_1st, xlab="30m", main="First order difference in monthly electricity generation")
+acf(demand_1st, main="ACF --- first order difference")
+pacf(demand_1st, main="ACF --- first order difference")
+# from the ACF plot, there is still some seasonality exists which cannot be captured, we tried to use larger order of differencing, but it does not work. From the KPSS test, the data is stationary, so we kept with only seasonal difference to avoid overfitting
+```
+
+```{r}
+demand_msts <- df$TOTALDEMAND %>%
+  msts(seasonal.periods = c(24*2, 24*2*7, 24*2*365))
+demand_msts %>%
+  mstl()%>%
+  autoplot()
+```
+
+```{r}
+unitroot_kpss(demand_msts)
+unitroot_ndiffs(demand_msts)
+demand_msts_1st <- diff(demand_msts, 1)
+kpss.test(demand_msts_1st)
+# not reject null -> stationary 
+plot(demand_msts_1st, xlab="30m", main="First order difference in monthly electricity generation")
+
+par(mfrow=c(1,2))
+acf(demand_msts_1st, main="ACF --- first order difference")
+pacf(demand_msts_1st, main="ACF --- first order difference")
+```
+
+Training the ARIMA model
+```{r split the data}
+######################################
+# split the data
+dt_before_2022 <- window(demand_1st,end=c(2021,12))
+train <- head(demand_msts_1st, 70127)
+test <- tail(demand_msts_1st, 8688)
+```
+
+Feature Selection
+```{r}
+#Cbind features training set
+air_temp <- df$`Air Temperature in degrees C` %>% msts(seasonal.periods = c(24*2, 24*2*7, 24*2*365))
+train_air <- air_temp[1:length(train)]
+humidity <- df$`Relative humidity in percentage %` %>% msts(seasonal.periods = c(24*2, 24*2*7, 24*2*365))
+train_humidity <- humidity[1:length(train)]
+wind_speed <-df$`Wind speed in km/h` %>% msts(seasonal.periods = c(24*2, 24*2*7, 24*2*365))
+train_wind <- wind_speed[1:length(train)]
+price <- df$TRADEPRICE %>% msts(seasonal.periods = c(24*2, 24*2*7, 24*2*365))
+train_price <- price[1:length(train)]
+weekend <- df$Weekend %>% msts(seasonal.periods = c(24*2, 24*2*7, 24*2*365))
+train_weekend <- weekend[1:length(train)]
+holiday <- df$Holiday %>% msts(seasonal.periods = c(24*2, 24*2*7, 24*2*365))
+train_holiday <- holiday[1:length(train)]
+covid <- df$Covid %>% msts(seasonal.periods = c(24*2, 24*2*7, 24*2*365))
+train_covid <- covid[1:length(train)]
+```
+
+TSLM
+```{r}
+fit_tslm_all <- tslm(train ~  train_air +  train_covid +train_holiday + train_humidity + train_price + train_weekend + train_wind)
+summary(fit_tslm_all)
+```
+
+```{r}
+fit_tslm1 <- tslm(train ~ train_covid + train_humidity + train_price + train_weekend + train_wind)
+summary(fit_tslm1)
+# limitation: R^2 too small
+```
+```{r}
+AICc(fit_tslm_all)
+AICc(fit_tslm1)
+
+```
+Three different feature selection
+```{r}
+features_exploration <- cbind(train_air, train_weekend, train_covid)
+features_all <- cbind(train_air, train_humidity, train_wind, train_price, train_weekend, train_holiday, train_covid)
+features_select <- cbind(train_humidity, train_wind, train_price, train_weekend, train_covid)
+```
+
+Arima model
+```{r trying ARIMA(1,1,0)}
+# d = 1, as long as both AR and MA exist, fitting model and use model selection criteria to choose our model
+fit_r1=Arima(train,order=c(1,1,0))
+fit_r1
+
+Box.test(fit_r1$residual, fitdf=length(fit_r1$coef)+1,lag=20,type="Lj")
+par(mfrow=c(1,2))
+acf(fit_r1$residuals)
+pacf(fit_r1$residuals)
+# AIC=857072.1   AICc=857072.1   BIC=857090.4
+# there is autocorrelation for this model, the ACF and PACF plots still suggest seasonality
+```
+```{r trying ARIMA(2,1,0)}
+# d = 1, as long as both AR and MA exist, fitting model and use model selection criteria to choose our model
+fit_r2=Arima(train,order=c(2,1,0))
+fit_r2
+
+Box.test(fit_r2$residual, fitdf=length(fit_r2$coef)+1,lag=20,type="Lj")
+par(mfrow=c(1,2))
+acf(fit_r2$residuals)
+pacf(fit_r2$residuals)
+# AIC=856752.4   AICc=856752.4   BIC=856779.9
+# there is autocorrelation for this model, the ACF and PACF plots still suggest seasonality
+```
+
+```{r trying ARIMA(2,1,1)}
+# d = 1, as long as both AR and MA exist, fitting model and use model selection criteria to choose our model
+fit_r3=Arima(train,order=c(2,1,1))
+fit_r3
+
+Box.test(fit_r3$residual, fitdf=length(fit_r3$coef)+1,lag=20,type="Lj")
+par(mfrow=c(1,2))
+acf(fit_r3$residuals)
+pacf(fit_r3$residuals)
+# AIC=856744.1   AICc=856744.1   BIC=856780.7
+# there is autocorrelation for this model, the ACF and PACF plots still suggest seasonality
+```
+```{r trying ARIMA(1,1,1)}
+# d = 1, as long as both AR and MA exist, fitting model and use model selection criteria to choose our model
+fit_r4=Arima(train,order=c(1,1,1))
+fit_r4
+
+Box.test(fit_r4$residual, fitdf=length(fit_r4$coef)+1,lag=20,type="Lj")
+par(mfrow=c(1,2))
+acf(fit_r4$residuals)
+pacf(fit_r4$residuals)
+# AIC=848630.9   AICc=848630.9   BIC=848658.3
+# there is autocorrelation for this model, the ACF and PACF plots still suggest seasonality
+```
+
+```{r trying ARIMA(2,1,2)}
+# d = 1, as long as both AR and MA exist, fitting model and use model selection criteria to choose our model
+fit_r5=Arima(train,order=c(2,1,2))
+fit_r5
+
+Box.test(fit_r5$residual, fitdf=length(fit_r5$coef)+1,lag=20,type="Lj")
+par(mfrow=c(1,2))
+acf(fit_r5$residuals)
+pacf(fit_r5$residuals)
+# AIC=848555.5   AICc=848555.5   BIC=848601.3
+# there is autocorrelation for this model, the ACF and PACF plots still suggest seasonality
+```
+```{r trying ARIMA(1,1,2)}
+# d = 1, as long as both AR and MA exist, fitting model and use model selection criteria to choose our model
+fit_r6=Arima(train,order=c(1,1,2))
+fit_r6
+
+Box.test(fit_r6$residual, fitdf=length(fit_r6$coef)+1,lag=20,type="Lj")
+par(mfrow=c(1,2))
+acf(fit_r6$residuals)
+pacf(fit_r6$residuals)
+# AIC=856739.2   AICc=856739.2   BIC=856775.8
+# there is autocorrelation for this model, the ACF and PACF plots still suggest seasonality
+```
+Since the seasonality cannot be captured by the non-seasonal ARIMA model, we try to add seasonal components to the model.
+
+Arima with dynamic regression
+Arima(1,1,0)
+```{r trying ARIMA(1,1,0)}
+#With Allfeatures
+fit_r11=Arima(train,order=c(1,1,0), xreg = features_all)
+fit_r11
+
+Box.test(fit_r11$residual, fitdf=length(fit_r11$coef)+1,lag=20,type="Lj")
+par(mfrow=c(1,2))
+acf(fit_r11$residuals)
+pacf(fit_r11$residuals)
+# AIC=856909   AICc=856909   BIC=856991.4
+```
+```{r trying ARIMA(1,1,0)}
+#Data exploration selected features
+fit_r12=Arima(train,order=c(1,1,0), xreg = features_exploration)
+fit_r12
+
+Box.test(fit_r12$residual, fitdf=length(fit_r12$coef)+1,lag=20,type="Lj")
+par(mfrow=c(1,2))
+acf(fit_r12$residuals)
+pacf(fit_r12$residuals)
+# AIC=857074.1   AICc=857074.1   BIC=857119.9
+```
+```{r trying ARIMA(1,1,0)}
+#With selected features
+fit_r13=Arima(train,order=c(1,1,0), xreg = features_select)
+fit_r13
+
+Box.test(fit_r13$residual, fitdf=length(fit_r13$coef)+1,lag=20,type="Lj")
+par(mfrow=c(1,2))
+acf(fit_r13$residuals)
+pacf(fit_r13$residuals)
+# AIC=856958   AICc=856958   BIC=857022.1
+```
+Arima(2,1,0)
+```{r trying ARIMA(2,1,0)}
+# With all features
+fit_r21=Arima(train,order=c(2,1,0), xreg = features_all)
+fit_r21
+
+Box.test(fit_r21$residual, fitdf=length(fit_r21$coef)+1,lag=20,type="Lj")
+par(mfrow=c(1,2))
+acf(fit_r21$residuals)
+pacf(fit_r21$residuals)
+# AIC=856596.6   AICc=856596.6   BIC=856688.2
+```
+
+```{r trying ARIMA(2,1,0)}
+#Data exploration selected features
+fit_r22=Arima(train,order=c(2,1,0), xreg = features_exploration)
+fit_r22
+
+Box.test(fit_r22$residual, fitdf=length(fit_r22$coef)+1,lag=20,type="Lj")
+par(mfrow=c(1,2))
+acf(fit_r22$residuals)
+pacf(fit_r22$residuals)
+# AIC=856755.2   AICc=856755.2   BIC=856810.1
+```
+
+```{r trying ARIMA(2,1,0)}
+#With selected features
+fit_r23=Arima(train,order=c(2,1,0), xreg = features_select)
+fit_r23
+
+Box.test(fit_r23$residual, fitdf=length(fit_r23$coef)+1,lag=20,type="Lj")
+par(mfrow=c(1,2))
+acf(fit_r23$residuals)
+pacf(fit_r23$residuals)
+# AIC=856646.2   AICc=856646.2   BIC=856719.4
+```
+Arima(2,1,1)
+```{r trying ARIMA(2,1,1)}
+# With all features
+fit_r31=Arima(train,order=c(2,1,1), xreg = features_all)
+fit_r31
+
+Box.test(fit_r31$residual, fitdf=length(fit_r31$coef)+1,lag=20,type="Lj")
+par(mfrow=c(1,2))
+acf(fit_r31$residuals)
+pacf(fit_r31$residuals)
+# AIC=856587.9   AICc=856587.9   BIC=856688.6
+```
+
+```{r trying ARIMA(2,1,1)}
+#Data exploration selected features
+fit_r32=Arima(train,order=c(2,1,1), xreg = features_exploration)
+fit_r32
+
+Box.test(fit_r32$residual, fitdf=length(fit_r32$coef)+1,lag=20,type="Lj")
+par(mfrow=c(1,2))
+acf(fit_r32$residuals)
+pacf(fit_r32$residuals)
+# AIC=856746.1   AICc=856746.1   BIC=856810.2
+```
+
+```{r trying ARIMA(2,1,1)}
+#With selected features
+# d = 1, as long as both AR and MA exist, fitting model and use model selection criteria to choose our model
+fit_r33=Arima(train,order=c(2,1,1), xreg = features_select)
+fit_r33
+
+Box.test(fit_r33$residual, fitdf=length(fit_r33$coef)+1,lag=20,type="Lj")
+par(mfrow=c(1,2))
+acf(fit_r33$residuals)
+pacf(fit_r33$residuals)
+# AIC=856638.5   AICc=856638.5   BIC=856720.9
+```
+Arima(1,1,1)
+```{r trying ARIMA(1,1,1)}
+# With all features
+fit_r41=Arima(train,order=c(1,1,1), xreg = features_all)
+fit_r41
+
+Box.test(fit_r41$residual, fitdf=length(fit_r41$coef)+1,lag=20,type="Lj")
+par(mfrow=c(1,2))
+acf(fit_r41$residuals)
+pacf(fit_r41$residuals)
+# AIC=848433.8   AICc=848433.8   BIC=848525.3
+```
+
+```{r trying ARIMA(1,1,1)}
+#Data exploration selected features
+fit_r42=Arima(train,order=c(1,1,1), xreg = features_exploration)
+fit_r42
+
+Box.test(fit_r42$residual, fitdf=length(fit_r42$coef)+1,lag=20,type="Lj")
+par(mfrow=c(1,2))
+acf(fit_r42$residuals)
+pacf(fit_r42$residuals)
+# AIC=848721.4   AICc=848721.4   BIC=848776.3
+```
+
+```{r trying ARIMA(1,1,1)}
+#With selected features
+# d = 1, as long as both AR and MA exist, fitting model and use model selection criteria to choose our model
+fit_r43=Arima(train,order=c(1,1,1), xreg = features_select)
+fit_r43
+
+Box.test(fit_r43$residual, fitdf=length(fit_r43$coef)+1,lag=20,type="Lj")
+par(mfrow=c(1,2))
+acf(fit_r43$residuals)
+pacf(fit_r43$residuals)
+# AIC=848600.5   AICc=848600.5   BIC=848673.8
+```
+
+Arima(2,1,2)
+```{r trying ARIMA(2,1,2)}
+# With all features
+fit_r51=Arima(train,order=c(2,1,2), xreg = features_all)
+fit_r51
+
+Box.test(fit_r51$residual, fitdf=length(fit_r51$coef)+1,lag=20,type="Lj")
+par(mfrow=c(1,2))
+acf(fit_r51$residuals)
+pacf(fit_r51$residuals)
+# AIC=848370.1   AICc=848370.1   BIC=848480
+```
+
+```{r trying ARIMA(2,1,2)}
+#Data exploration selected features
+fit_r52=Arima(train,order=c(2,1,2), xreg = features_exploration)
+fit_r52
+
+Box.test(fit_r52$residual, fitdf=length(fit_r52$coef)+1,lag=20,type="Lj")
+par(mfrow=c(1,2))
+acf(fit_r52$residuals)
+pacf(fit_r52$residuals)
+# AIC=848516.4   AICc=848516.4   BIC=848589.7
+```
+
+```{r trying ARIMA(2,1,2)}
+#With selected features
+# d = 1, as long as both AR and MA exist, fitting model and use model selection criteria to choose our model
+fit_r53=Arima(train,order=c(2,1,2), xreg = features_select)
+fit_r53
+
+Box.test(fit_r53$residual, fitdf=length(fit_r53$coef)+1,lag=20,type="Lj")
+par(mfrow=c(1,2))
+acf(fit_r53$residuals)
+pacf(fit_r53$residuals)
+# AIC=848355.7   AICc=848355.7   BIC=848447.3
+```
+
+Arima(1,1,2)
+```{r trying ARIMA(1,1,2)}
+# With all features
+fit_r61=Arima(train,order=c(1,1,2), xreg = features_all)
+fit_r61
+
+Box.test(fit_r61$residual, fitdf=length(fit_r61$coef)+1,lag=20,type="Lj")
+par(mfrow=c(1,2))
+acf(fit_r61$residuals)
+pacf(fit_r61$residuals)
+# AIC=856583.5   AICc=856583.5   BIC=856684.2
+```
+
+```{r trying ARIMA(1,1,2)}
+#Data exploration selected features
+fit_r62=Arima(train,order=c(1,1,2), xreg = features_exploration)
+fit_r62
+
+Box.test(fit_r62$residual, fitdf=length(fit_r62$coef)+1,lag=20,type="Lj")
+par(mfrow=c(1,2))
+acf(fit_r62$residuals)
+pacf(fit_r62$residuals)
+# AIC=856742   AICc=856742.1   BIC=856806.2
+```
+
+```{r trying ARIMA(1,1,2)}
+#With selected features
+# d = 1, as long as both AR and MA exist, fitting model and use model selection criteria to choose our model
+fit_r63=Arima(train,order=c(1,1,2), xreg = features_select)
+fit_r63
+
+Box.test(fit_r63$residual, fitdf=length(fit_r63$coef)+1,lag=20,type="Lj")
+par(mfrow=c(1,2))
+acf(fit_r63$residuals)
+pacf(fit_r63$residuals)
+# AIC=856632   AICc=856632   BIC=856714.4
+```
+
+Fourier
+TSLM
+```{r}
+fit_tslm_f1=tslm(train~train_air +  train_covid +train_holiday + train_humidity + train_price + train_weekend + train_wind + fourier(train,K=3))
+summary(fit_tslm_f1)
+AICc(fit_tslm_f1)
+
+plot(train,main="demand from 2018 onward")
+lines(fit_tslm_f1$fitted.values,col='red')
+```
+TSLM after drop insignificant terms
+```{r}
+fit_tslm_f2=tslm(train~train_air +  train_covid + train_humidity + train_price + train_weekend + train_wind + fourier(train,K=3))
+summary(fit_tslm_f2)
+AICc(fit_tslm_f2)
+```
+
+ARIMA
+(1,1,0)
+```{r}
+#select all features
+fit_arima_f11 <- Arima(train, order=c(1,1,0), xreg=cbind(fourier(train, K=3), features_all),method='CSS-ML')
+fit_arima_f11
+
+Box.test(fit_arima_f11$residual, fitdf=length(fit_arima_f11$coef)+1,lag=20,type="Lj")
+par(mfrow=c(1,2))
+acf(fit_arima_f11$residuals)
+pacf(fit_arima_f11$residuals)
+# AIC=856921   AICc=856921   BIC=857058.3
+```
+```{r}
+#select significant features
+fit_arima_f12 <- Arima(train, order=c(1,1,0), xreg=cbind(fourier(train, K=3), features_select),method='CSS-ML')
+fit_arima_f12
+
+Box.test(fit_arima_f12$residual, fitdf=length(fit_arima_f12$coef)+1,lag=20,type="Lj")
+par(mfrow=c(1,2))
+acf(fit_arima_f12$residuals)
+pacf(fit_arima_f12$residuals)
+# AIC=856969.9   AICc=856969.9   BIC=857089
+```
+```{r}
+#With data exploration selected features
+fit_arima_f13 <- Arima(train, order=c(1,1,0), xreg=cbind(fourier(train, K=3), features_exploration),method='CSS-ML')
+fit_arima_f13
+
+Box.test(fit_arima_f13$residual, fitdf=length(fit_arima_f13$coef)+1,lag=20,type="Lj")
+par(mfrow=c(1,2))
+acf(fit_arima_f13$residuals)
+pacf(fit_arima_f13$residuals)
+# AIC=857086.1   AICc=857086.1   BIC=857186.9
+```
+(2,1,0)
+```{r}
+#With all features
+fit_arima_f21 <- Arima(train, order=c(2,1,0), xreg=cbind(fourier(train, K=3), features_all),method='CSS-ML')
+fit_arima_f21
+
+Box.test(fit_arima_f21$residual, fitdf=length(fit_arima_f21$coef)+1,lag=20,type="Lj")
+par(mfrow=c(1,2))
+acf(fit_arima_f21$residuals)
+pacf(fit_arima_f21$residuals)
+# AIC=856608.6   AICc=856608.6   BIC=856755.1
+```
+```{r}
+#with significant features
+fit_arima_f22 <- Arima(train, order=c(2,1,0), xreg=cbind(fourier(train, K=3), features_select),method='CSS-ML')
+fit_arima_f22
+
+Box.test(fit_arima_f22$residual, fitdf=length(fit_arima_f22$coef)+1,lag=20,type="Lj")
+par(mfrow=c(1,2))
+acf(fit_arima_f22$residuals)
+pacf(fit_arima_f22$residuals)
+# AIC=856658.2   AICc=856658.2   BIC=856786.4
+```
+
+```{r}
+#with data exploration selected features
+fit_arima_f23 <- Arima(train, order=c(2,1,0), xreg=cbind(fourier(train, K=3), features_exploration),method='CSS-ML')
+fit_arima_f23
+
+Box.test(fit_arima_f23$residual, fitdf=length(fit_arima_f23$coef)+1,lag=20,type="Lj")
+par(mfrow=c(1,2))
+acf(fit_arima_f23$residuals)
+pacf(fit_arima_f23$residuals)
+# AIC=856767.2   AICc=856767.2   BIC=856877.1
+```
+(2,1,1)
+```{r}
+#With all features
+fit_arima_f31 <- Arima(train, order=c(2,1,1), xreg=cbind(fourier(train, K=3), features_all),method='CSS-ML')
+fit_arima_f31
+
+Box.test(fit_arima_f31$residual, fitdf=length(fit_arima_f31$coef)+1,lag=20,type="Lj")
+par(mfrow=c(1,2))
+acf(fit_arima_f31$residuals)
+pacf(fit_arima_f31$residuals)
+# AIC=856599.9   AICc=856599.9   BIC=856755.5
+```
+```{r}
+#With significant features
+fit_arima_f32 <- Arima(train, order=c(2,1,1), xreg=cbind(fourier(train, K=3), features_select),method='CSS-ML')
+fit_arima_f32
+
+Box.test(fit_arima_f32$residual, fitdf=length(fit_arima_f32$coef)+1,lag=20,type="Lj")
+par(mfrow=c(1,2))
+acf(fit_arima_f32$residuals)
+pacf(fit_arima_f32$residuals)
+# AIC=856650   AICc=856650   BIC=856787.4
+```
+
+```{r}
+#With data exploration selected features
+fit_arima_f33 <- Arima(train, order=c(2,1,1), xreg=cbind(fourier(train, K=3), features_exploration),method='CSS-ML')
+fit_arima_f33
+
+Box.test(fit_arima_f33$residual, fitdf=length(fit_arima_f33$coef)+1,lag=20,type="Lj")
+par(mfrow=c(1,2))
+acf(fit_arima_f33$residuals)
+pacf(fit_arima_f33$residuals)
+# AIC=856758   AICc=856758   BIC=856877
+```
+(1,1,1)
+```{r}
+#With all features
+fit_arima_f41 <- Arima(train, order=c(1,1,1), xreg=cbind(fourier(train, K=3), features_all),method='CSS-ML')
+fit_arima_f41
+
+Box.test(fit_arima_f41$residual, fitdf=length(fit_arima_f41$coef)+1,lag=20,type="Lj")
+par(mfrow=c(1,2))
+acf(fit_arima_f41$residuals)
+pacf(fit_arima_f41$residuals)
+# AIC=848443.5   AICc=848443.5   BIC=848590
+```
+```{r}
+#With significant features
+fit_arima_f42 <- Arima(train, order=c(1,1,1), xreg=cbind(fourier(train, K=3), features_select),method='CSS-ML')
+fit_arima_f42
+
+Box.test(fit_arima_f42$residual, fitdf=length(fit_arima_f42$coef)+1,lag=20,type="Lj")
+par(mfrow=c(1,2))
+acf(fit_arima_f42$residuals)
+pacf(fit_arima_f42$residuals)
+# AIC=848463.4   AICc=848463.4   BIC=848591.6
+```
+
+```{r}
+#With data exploration selected features
+fit_arima_f43 <- Arima(train, order=c(1,1,1), xreg=cbind(fourier(train, K=3), features_exploration),method='CSS-ML')
+fit_arima_f43
+
+Box.test(fit_arima_f43$residual, fitdf=length(fit_arima_f43$coef)+1,lag=20,type="Lj")
+par(mfrow=c(1,2))
+acf(fit_arima_f43$residuals)
+pacf(fit_arima_f43$residuals)
+# AIC=848595.5   AICc=848595.5   BIC=848705.4
+```
+(2,1,2)
+```{r}
+#With all features
+fit_arima_f51 <- Arima(train, order=c(2,1,2), xreg=cbind(fourier(train, K=3), features_all),method='CSS-ML')
+fit_arima_f51
+
+Box.test(fit_arima_f51$residual, fitdf=length(fit_arima_f51$coef)+1,lag=20,type="Lj")
+par(mfrow=c(1,2))
+acf(fit_arima_f51$residuals)
+pacf(fit_arima_f51$residuals)
+# AIC=848388.5   AICc=848388.5   BIC=848553.3
+```
+
+```{r}
+#With significant features
+fit_arima_f52 <- Arima(train, order=c(2,1,2), xreg=cbind(fourier(train, K=3), features_select),method='CSS-ML')
+fit_arima_f52
+
+Box.test(fit_arima_f52$residual, fitdf=length(fit_arima_f52$coef)+1,lag=20,type="Lj")
+par(mfrow=c(1,2))
+acf(fit_arima_f52$residuals)
+pacf(fit_arima_f52$residuals)
+# AIC=848364.3   AICc=848364.3   BIC=848510.9
+```
+
+```{r}
+#With data exploration selected features
+fit_arima_f53 <- Arima(train, order=c(2,1,2), xreg=cbind(fourier(train, K=3), features_exploration),method='CSS-ML')
+fit_arima_f53
+
+Box.test(fit_arima_f53$residual, fitdf=length(fit_arima_f53$coef)+1,lag=20,type="Lj")
+par(mfrow=c(1,2))
+acf(fit_arima_f53$residuals)
+pacf(fit_arima_f53$residuals)
+# AIC=848529.6   AICc=848529.6   BIC=848657.8
+```
+(1,1,2)
+```{r}
+#With all features
+fit_arima_f61 <- Arima(train, order=c(1,1,2), xreg=cbind(fourier(train, K=3), features_all),method='CSS-ML')
+fit_arima_f61
+
+Box.test(fit_arima_f61$residual, fitdf=length(fit_arima_f61$coef)+1,lag=20,type="Lj")
+par(mfrow=c(1,2))
+acf(fit_arima_f61$residuals)
+pacf(fit_arima_f61$residuals)
+# AIC=856595.5   AICc=856595.5   BIC=856751.2
+```
+
+```{r}
+#With significant features
+fit_arima_f62 <- Arima(train, order=c(1,1,2), xreg=cbind(fourier(train, K=3), features_select),method='CSS-ML')
+fit_arima_f62
+
+Box.test(fit_arima_f62$residual, fitdf=length(fit_arima_f62$coef)+1,lag=20,type="Lj")
+par(mfrow=c(1,2))
+acf(fit_arima_f62$residuals)
+pacf(fit_arima_f62$residuals)
+# AIC=856644   AICc=856644   BIC=856781.4
+```
+
+```{r}
+#With data exploration selected features
+fit_arima_f63 <- Arima(train, order=c(1,1,2), xreg=cbind(fourier(train, K=3), features_exploration),method='CSS-ML')
+fit_arima_f63
+
+Box.test(fit_arima_f63$residual, fitdf=length(fit_arima_f63$coef)+1,lag=20,type="Lj")
+par(mfrow=c(1,2))
+acf(fit_arima_f63$residuals)
+pacf(fit_arima_f63$residuals)
+# AIC=856754   AICc=856754   BIC=856873.1
+```
+
+Accuracy
+Arima
+```{r}
+rbind(accuracy(forecast(fit_r1), test), accuracy(forecast(fit_r2), test), accuracy(forecast(fit_r3), test), accuracy(forecast(fit_r4), test), accuracy(forecast(fit_r5), test), accuracy(forecast(fit_r6), test))
+```
+Arima with dynamic regression
+```{r}
+accuracy_arima11 <- accuracy(forecast(fitted(fit_r11)), test)
+accuracy_arima11
+accuracy_arima12 <- accuracy(forecast(fitted(fit_r12)), test)
+accuracy_arima12
+accuracy_arima13 <- accuracy(forecast(fitted(fit_r13)), test)
+accuracy_arima13
+accuracy_arima21 <- accuracy(forecast(fitted(fit_r21)), test)
+accuracy_arima21
+accuracy_arima22 <- accuracy(forecast(fitted(fit_r22)), test)
+accuracy_arima22
+accuracy_arima23 <- accuracy(forecast(fitted(fit_r23)), test)
+accuracy_arima23
+accuracy_arima31 <- accuracy(forecast(fitted(fit_r31)), test)
+accuracy_arima31
+accuracy_arima32 <- accuracy(forecast(fitted(fit_r32)), test)
+accuracy_arima32
+accuracy_arima33 <- accuracy(forecast(fitted(fit_r33)), test)
+accuracy_arima33
+accuracy_arima41 <- accuracy(forecast(fitted(fit_r41)), test)
+accuracy_arima41
+accuracy_arima42 <- accuracy(forecast(fitted(fit_r42)), test)
+accuracy_arima42
+accuracy_arima43 <- accuracy(forecast(fitted(fit_r43)), test)
+accuracy_arima51 <- accuracy(forecast(fitted(fit_r51)), test)
+accuracy_arima52 <- accuracy(forecast(fitted(fit_r52)), test)
+accuracy_arima53 <- accuracy(forecast(fitted(fit_r53)), test)
+accuracy_arima61 <- accuracy(forecast(fitted(fit_r61)), test)
+accuracy_arima62 <- accuracy(forecast(fitted(fit_r62)), test)
+accuracy_arima63 <- accuracy(forecast(fitted(fit_r63)), test)
+```
+dynamic regression with all features 
+```{r}
+rbind(accuracy_arima11, accuracy_arima21, accuracy_arima31,accuracy_arima41, accuracy_arima51,accuracy_arima61)
+# ARIMA(2,1,2)
+```
+dynamic regression with selected features
+```{r}
+rbind(accuracy_arima12, accuracy_arima22, accuracy_arima32,accuracy_arima42, accuracy_arima52,accuracy_arima62)
+# ARIMA(2,1,2)
+```
+
+dynamic regression model with data exploration features
+```{r}
+rbind(accuracy_arima13, accuracy_arima23, accuracy_arima33,accuracy_arima43, accuracy_arima53,accuracy_arima63)
+```
+
+TSLM with fourier
+```{r}
+accuracy_tslm_f1 <- accuracy(forecast(fitted(fit_tslm_f1)), test)
+accuracy_tslm_f2 <- accuracy(forecast(fitted(fit_tslm_f2)), test)
+rbind(accuracy_tslm_f1, accuracy_tslm_f2)
+```
+TSLM 
+```{r}
+accuracy_tslm_all <- accuracy(forecast(fitted(fit_tslm_all)), test)
+accuracy_tslm1 <- accuracy(forecast(fitted(fit_tslm1)), test)
+rbind(accuracy_tslm_all, accuracy_tslm1)
+```
+
+Arima with fourier
+```{r}
+accuracy_arima_f11 <- accuracy(forecast(fitted(fit_arima_f11)), test)
+accuracy_arima_f12 <- accuracy(forecast(fitted(fit_arima_f12)), test)
+accuracy_arima_f13 <- accuracy(forecast(fitted(fit_arima_f13)), test)
+accuracy_arima_f21 <- accuracy(forecast(fitted(fit_arima_f21)), test)
+accuracy_arima_f22 <- accuracy(forecast(fitted(fit_arima_f22)), test)
+accuracy_arima_f23 <- accuracy(forecast(fitted(fit_arima_f23)), test)
+accuracy_arima_f31 <- accuracy(forecast(fitted(fit_arima_f31)), test)
+accuracy_arima_f32 <- accuracy(forecast(fitted(fit_arima_f32)), test)
+accuracy_arima_f33 <- accuracy(forecast(fitted(fit_arima_f33)), test)
+accuracy_arima_f41 <- accuracy(forecast(fitted(fit_arima_f41)), test)
+accuracy_arima_f42 <- accuracy(forecast(fitted(fit_arima_f42)), test)
+accuracy_arima_f43 <- accuracy(forecast(fitted(fit_arima_f43)), test)
+accuracy_arima_f51 <- accuracy(forecast(fitted(fit_arima_f51)), test)
+accuracy_arima_f52 <- accuracy(forecast(fitted(fit_arima_f52)), test)
+accuracy_arima_f53 <- accuracy(forecast(fitted(fit_arima_f53)), test)
+accuracy_arima_f61 <- accuracy(forecast(fitted(fit_arima_f61)), test)
+accuracy_arima_f62 <- accuracy(forecast(fitted(fit_arima_f62)), test)
+accuracy_arima_f63 <- accuracy(forecast(fitted(fit_arima_f63)), test)
+```
+
+dynamic regression with fourier terms added: all features 
+```{r}
+rbind(accuracy_arima_f11, accuracy_arima_f21, accuracy_arima_f31,accuracy_arima_f41, accuracy_arima_f51,accuracy_arima_f61)
+# ARIMA(2,1,2)
+```
+
+dynamic regression with fourier terms added: selected features 
+```{r}
+rbind(accuracy_arima_f12, accuracy_arima_f22, accuracy_arima_f32,accuracy_arima_f42, accuracy_arima_f52,accuracy_arima_f62)
+# ARIMA(1,1,1)
+```
+
+dynamic regression with fourier terms added: data exploration features
+```{r}
+rbind(accuracy_arima_f13, accuracy_arima_f23, accuracy_arima_f33,accuracy_arima_f43, accuracy_arima_f53,accuracy_arima_f63)
+# ARIMA(2,1,2)
+```
+
+DM test
+H0: model 1 has the same forecast accuracy with model 2
+H1: model 2 is less accurate than model 1
+```{r}
+# compare ARIMA(2,1,2) with selected features and tslm with Fourier terms with selected features
+forecast_fit_r53 <- forecast(fitted(fit_r53), h = 8688)
+forecast_fit_tslm_f2 <- forecast(fitted(fit_tslm_f2), h = 8688)
+e1=test-forecast_fit_r53$mean
+e2=test-forecast_fit_tslm_f2$mean
+dm.test(e1,e2,power=2,alternative="l")
+```
+
+```{r}
+# compare ARIMA(2,1,2) with selected features and naive ARIMA(2,1,2)
+forecast_fit_r53 <- forecast(fitted(fit_r53), h = 8688)
+forecast_fit_r5 <- forecast(fitted(fit_r5), h = 8688)
+e1=test-forecast_fit_r53$mean
+e2=test-forecast_fit_r5$mean
+dm.test(e1,e2,power=2,alternative="l")
+```
+
+```{r}
+# compare ARIMA(2,1,2) with selected features and ARIMA(2,1,2) with all features
+# fail to reject the null, forecast accruacy the same
+forecast_fit_r53 <- forecast(fitted(fit_r53), h = 8688)
+forecast_fit_r51 <- forecast(fitted(fit_r51), h = 8688)
+e1=test-forecast_fit_r53$mean
+e2=test-forecast_fit_r51$mean
+dm.test(e1,e2,power=2,alternative="l")
+```
+
+```{r}
+# compare ARIMA(2,1,2) with selected features and tslm using Fourier transformation with all features
+forecast_fit_r53 <- forecast(fitted(fit_r53), h = 8688)
+forecast_fit_tslm_f1 <- forecast(fitted(fit_tslm_f1), h = 8688)
+e1=test-forecast_fit_r53$mean
+e2=test-forecast_fit_tslm_f1$mean
+dm.test(e1,e2,power=2,alternative="l")
+```
+
+Checking residuals
+```{r}
+# final model chosen is fit_r51
+final_model <- fit_r51
+res1<-residuals(final_model)#residuals
+par(mfrow=c(1,1))
+hist(res1,100)
+ks.test(res1,pnorm) #check if the residuals are normal distributed: KS p-value = 0 -> not normal!
+```
+
+CC test
+```{r}
+cc.test <- function (q, y, alpha, where) {
+  stats<-matrix(0,1,3)
+  colnames(stats)<-c("phat","LR","p-val")
+  n<-length(y)
+  if(where=="body"){ #where is a string indicating the area to test
+    #If where="body", q must have two columns
+    x<-(sum(y>=q[,1])-sum(y>q[,2]))
+  }else if(where=="lower"){
+    x<-sum(y<=q)
+  } else {
+    x<-n-sum(y<=q)
+  }
+  
+  stats[1]<-x/n
+  lu<-(n-x)*log(1-stats[1])+x*log(stats[1])
+  lr<-(n-x)*log(1-alpha)+x*log(alpha)
+  stats[2]<-2*(lu-lr) #LR test statistic
+  stats[3]<-pchisq(stats[2],1,lower.tail=FALSE)
+  return(stats)
+}
+```
+
+LL-Test
+Final Model
+```{r}
+LL_pval<-function(fit){
+  fit.c=fit@coef
+  fit.t=fit.c/sqrt(diag(fit@vcov))
+  stat=cbind(round(fit.c,4),"t-stat"=round(fit.t,4),
+             "p-val"=round(pnorm(abs(fit.t),lower.tail=FALSE)*2,4))
+  return(stat)
+}
+```
+
+```{r}
+# 1) Normal error
+LL_norm<-function(sig){
+  R = dnorm(final_model$residuals,mean=0,sig,log=TRUE)
+  -sum(R)
+}
+fit_norm=mle(minuslogl = LL_norm, 
+             start = 0.003, 
+             method = "L-BFGS-B", 
+             lower = 0.001, 
+             upper = Inf)
+LL_pval(fit_norm)
+AIC(fit_norm)
+```
+
+```{r}
+# 2) Student t error (Lecture page 48)
+LL_t<-function(sig,df){
+  R=dst(final_model$residuals, xi=0, omega=sig, nu=df, alpha=0, log=TRUE)
+  -sum(R)
+}
+fit_t=mle(minuslogl = LL_t, 
+          start = list(sig=3.0, df=5), 
+          method = "L-BFGS-B",
+          lower = 0.001, 
+          upper = Inf)
+LL_pval(fit_t)
+AIC(fit_t)
+```
+
+```{r}
+# 3) Skewed normal error
+LL_sn<-function(sig,sk){
+  R=dsn(final_model$residuals, xi=0, omega=sig, alpha=sk,log=TRUE)
+  -sum(R)
+}
+fit_sn=mle(minuslogl = LL_sn, 
+           start = list(sig=3.0, sk=0), 
+           method = "L-BFGS-B",
+           lower = 0.001, 
+           upper = Inf)
+LL_pval(fit_sn)
+AIC(fit_sn)
+```
+
+```{r}
+# 4) Skewed student t error
+LL_st<-function(sig,df,sk){
+  R=dst(final_model$residuals, xi=0, omega=sig,nu=df, alpha=sk,log=TRUE)
+  -sum(R)
+}
+fit_st=mle(minuslogl = LL_st, 
+           start = list(sig=3, df=3, sk=0), 
+           method = "L-BFGS-B",
+          lower = 0.001, 
+          upper = Inf)
+LL_pval(fit_st)
+AIC(fit_st)
+```
+Try other four model with student t error
+for naive arima model(2,1,2) with fourier
+```{r}
+LL_t<-function(sig,df){
+  r=dst(fit_arima_f53$residuals, xi=0, omega=sig, nu=df, alpha=0, log=TRUE)
+  -sum(r)
+}
+fit_t=mle(minuslogl = LL_t, 
+          start = list(sig=3.0, df=5), 
+          method = "L-BFGS-B",
+          lower = c(0,4), 
+          upper = c(Inf, Inf))
+summary(fit_t)
+coeft=fit_t@coef
+q=qst(0.99,omega=coeft["sig"],alpha=0,nu=coeft["df"])
+cc.test(q, test, 0.01, "upper")
+```
+TSLM with all features & fourier
+```{r}
+LL_t<-function(sig,df){
+  r=dst(fit_tslm_f1$residuals, xi=0, omega=sig, nu=df, alpha=0, log=TRUE)
+  -sum(r)
+}
+fit_t=mle(minuslogl = LL_t, 
+          start = list(sig=3.0, df=5), 
+          method = "L-BFGS-B",
+          lower = c(0,4), 
+          upper = c(Inf, Inf))
+summary(fit_t)
+coeft=fit_t@coef
+q=qst(0.99,omega=coeft["sig"],alpha=0,nu=coeft["df"])
+cc.test(q, test, 0.01, "upper")
+```
+TSLM with fourier & selected
+```{r}
+LL_t<-function(sig,df){
+  r=dst(fit_tslm_f2$residuals, xi=0, omega=sig, nu=df, alpha=0, log=TRUE)
+  -sum(r)
+}
+fit_t=mle(minuslogl = LL_t, 
+          start = list(sig=3.0, df=5), 
+          method = "L-BFGS-B",
+          lower = c(0,4), 
+          upper = c(Inf, Inf))
+summary(fit_t)
+coeft=fit_t@coef
+q=qst(0.99,omega=coeft["sig"],alpha=0,nu=coeft["df"])
+cc.test(q, test, 0.01, "upper")
+```
+```{r}
+LL_t<-function(sig,df){
+  r=dst(fit_arima_f53$residuals, xi=0, omega=sig, nu=df, alpha=0, log=TRUE)
+  -sum(r)
+}
+fit_t=mle(minuslogl = LL_t, 
+          start = list(sig=3.0, df=5), 
+          method = "L-BFGS-B",
+          lower = c(0,4), 
+          upper = c(Inf, Inf))
+summary(fit_t)
+coeft=fit_t@coef
+q=qst(0.99,omega=coeft["sig"],alpha=0,nu=coeft["df"])
+cc.test(q, test, 0.01, "upper")
+```
+
+Forecast for Maximum demand
+```{r}
+forecast_air <- forecast(air_temp, h = 48*7)$mean
+forecast_humidity <- forecast(humidity, h = 48*7)$mean
+forecast_wind <- forecast(wind_speed, h = 48*7)$mean
+forecast_price <- forecast(price, h=48*7)$mean
+forecast_weekend <- forecast(weekend, h=48*7)$mean
+forecast_holiday <-forecast(holiday, h = 48*7)$mean
+forecast_covid <- forecast(covid, h=48*7)$mean
+features_tslm_f1 <- cbind(forecast_air, forecast_humidity, forecast_wind, forecast_price, forecast_weekend, forecast_holiday, forecast_covid, fourier(demand_msts, K= c(10,10,3), h=48*7))
+```
+
+Final model for tslm_f1
+```{r}
+fit_tslm_f1_full <- tslm(demand_msts~ air_temp + covid + holiday + humidity + price + weekend + wind_speed + fourier(demand_msts,K=c(10,10,3)))
+Forecast_tslm_f1 <- forecast(fitted(fit_tslm_f1_full), h = 48*7)
+LL_t<-function(sig,df){
+  r=dst(fit_tslm_f1_full$residuals, xi=0, omega=sig, nu=df, alpha=0, log=TRUE)
+  -sum(r)
+}
+fit_t=mle(minuslogl = LL_t, 
+          start = list(sig=3.0, df=5), 
+          method = "L-BFGS-B",
+          lower = c(0,4), 
+          upper = c(Inf, Inf))
+coeft <- fit_t@coef
+q <- qst(0.99,xi=Forecast_tslm_f1$mean,omega=coeft["sig"],alpha=0,nu=coeft["df"])
+```
+Final model for r51
+```{r}
+feature_r51 <- cbind(air_temp, covid, holiday, humidity, price, weekend, wind_speed)
+fit_r51_full <- Arima(demand_msts,order=c(2,1,2), xreg = feature_r51)
+Forecast_r51 <- forecast(fitted(fit_r51_full), h =48*7)
+```
+
+```{r}
+datetime_forecast <- seq(from = ymd_hms('2022-07-01 00:00:00'), to = ymd_hms('2022-07-07 23:30:00'), by='30 mins')
+plot(datetime_forecast,Forecast_r51$mean,ylim=c(min(Forecast_r51$mean), max(q)), xlab = "Time", ylab = "Electricity Demand", main = "Forecast Electricity Demand")
+lines(datetime_forecast,q, col='red')
+```
+
