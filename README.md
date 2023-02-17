@@ -6,7 +6,8 @@ This is a predictive analytics project that aims to build a model for predicting
 
 The following files are included in this project:
 
-**AEMO_electricity.csv**: a CSV file containing the half-hourly electricity demand and price data from the Victorian electricity market.
+**AEMO_electricity.csv**: 
+a CSV file containing the half-hourly electricity demand and price data from the Victorian electricity market.
 
 **MELAIR_weather.csv**: a CSV file containing the half-hourly weather data from Melbourne Airport.
 
